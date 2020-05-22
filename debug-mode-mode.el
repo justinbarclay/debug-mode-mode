@@ -28,10 +28,15 @@
 
 ;; Local State
 (defvar debug-mode-state (make-hash-table) "The database of the debug mode tracked state")
+(defvar debug-mode-cached-state nil "Cache the current debug-mode-state if we are time traveling")
+(defvar-local debug-mode--time-traveling-p nil "Whether we are in the middle of time traveling")
+(defvar-local debug-mode--time-point nil "The current point in time (index into state history) we have traveled do.")
+(defvar debug-mode-state-history '())
 (defvar debug-mode-buffer nil "The current debug mode buffer")
 (defvar debug-mode-frame nil "The frame debug-mode-spawned")
 (defvar debug-mode-watch-variables '() "Variables currently being watched by debug-mode")
 (defvar debug-mode-formatters '() "An alist of variable names and their formatters")
+
 ;; Format strings
 (defun print-state (buffer)
   (with-current-buffer buffer
@@ -41,8 +46,17 @@
              debug-mode-state)))
 
 (defun debug-mode-watch-variable (symbol newval operation where)
-  (puthash symbol (apply (cadr (assoc symbol debug-mode-formatters)) (list newval)) debug-mode-state)
-  (print-state debug-mode-buffer))
+  (add-to-list 'debug-mode-state-history (copy-hash-table debug-mode-state))
+  (puthash symbol
+           (if newval
+               (apply
+                (cadr
+                 (assoc symbol debug-mode-formatters))
+                (list newval))
+             newval)
+           debug-mode-state)
+  (print-state debug-mode-buffer)
+  newval)
 
 (defun watch-variables (vars)
   (mapcar (lambda (var-&-formatter)
@@ -53,6 +67,24 @@
                                     'debug-mode-watch-variable)))
           vars)
   (print-state debug-mode-buffer))
+
+(defun time-travel-max ()
+  (length debug-mode-state-history))
+
+(defun time-travel-backwards ()
+  "Move back in time as long as time is a positive number. We don't want to start another big bang."
+  (interactive)
+  (when (not debug-mode--time-traveling-p)
+    (setq-local debug-mode--time-traveling-p 't)
+    (setq debug-mode-cached-state debug-mode-state)
+    (setq-local debug-mode--time-point (1+ (time-travel-max))))
+  (if (> debug-mode--time-point 0)
+      (progn
+        (setq debug-mode--time-point (1- debug-mode--time-point))
+        (setq debug-mode-state (nth debug-mode--time-point
+                                    debug-mode-state-history))
+        (print-state debug-mode-buffer))
+    (message "We can't go back any further!")))
 
 (defun unwatch-variables (variables)
   (mapcar (lambda (var)
@@ -66,27 +98,38 @@
   (with-current-buffer debug-mode-buffer
     (print-state debug-mode-buffer)
     (setq debug-mode-frame (make-frame))))
-
 ;; (spawn-display)
-
 (defun quit-debug-mode ()
   (interactive)
   (let* ((buffer debug-mode-buffer)
          (frame debug-mode-frame))
     (setq debug-mode-buffer nil)
+    (setq debug-mode-state (make-hash-table))
+    (setq debug-mode-state-history '())
     (setq debug-mode-frame nil)
-    (kill-buffer debug-mode-buffer)
-    (make-frame-invisible debug-mode-frame)))
+    (setq debug-mode-cached-state nil)
+    (setq debug-mode-formatters nil)
+    (unwatch-variables debug-mode-watch-variables)
+    (setq debug-mode-watch-variables '())
+    (kill-buffer buffer)
+    (make-frame-invisible frame)))
 
+(defvar debug-mode-mode-map
+  (let ((m (make-sparse-keymap)))
+    (define-key m (kbd "C-c b") 'time-travel-backwards)
+    m)
+  "Keymap for `parinfer-rust-mode'.")
 (define-minor-mode debug-mode-mode
   "A simpler way to write lisps"
   :lighter " debug"
   :init-value nil
-  :keymap nil
-  (message "Starting debug-mode-mode")
+  :keymap debug-mode-mode-map
   (if debug-mode-buffer
-      (spawn-display)
-    (quite-debug-mode)))
+      (quit-debug-mode)
+    (spawn-display)))
 
+;; (define-derived-mode debug-mode-mode)
+(watch-variables '((parinfer-rust--previous-options parinfer-rust-print-options) (parinfer-rust--current-changes parinfer-rust-print-changes)))
+;; (unwatch-variables '(parinfer-rust--current-changes parinfer-rust--current-changes))
 (provide 'debug-mode-mode)
 ;;; debug-mode-mode.el ends here
