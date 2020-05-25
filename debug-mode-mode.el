@@ -25,19 +25,33 @@
 
 ;;; Commentary:
 
+;; Modules
+;; A hack until we get this fully loaded as a library
+(load-file "./debug-mode-time-travel.el")
+
 
 ;; Local State
 (defvar debug-mode-state (make-hash-table) "The database of the debug mode tracked state")
 (defvar debug-mode-cached-state nil "Cache the current debug-mode-state if we are time traveling")
-(defvar-local debug-mode--time-traveling-p nil "Whether we are in the middle of time traveling")
-(defvar-local debug-mode--time-point nil "The current point in time (index into state history) we have traveled do.")
 (defvar debug-mode-state-history '())
 (defvar debug-mode-buffer nil "The current debug mode buffer")
 (defvar debug-mode-frame nil "The frame debug-mode-spawned")
 (defvar debug-mode-variables '() "Variables currently being watched by debug-mode")
 (defvar debug-mode-formatters '() "An alist of variable names and their formatters")
 
-;;
+;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Helper functions
+;;;;;;;;;;;;;;;;;;;;;;;;;
+(defun debug-mode--reset-state ()
+  (setq debug-mode-buffer nil)
+  (setq debug-mode--time-traveling-p nil)
+  (setq debug-mode-state (make-hash-table))
+  (setq debug-mode-state-history '())
+  (setq debug-mode-frame nil)
+  (setq debug-mode-cached-state nil)
+  (setq debug-mode-formatters nil)
+  (setq debug-mode-watch-variables '()))
+
 (defun progress-bar (percentage)
   "Percentage is how complete the current progress is."
   (let* ((bar-length (- (window-width) 12))
@@ -52,35 +66,67 @@
                 "-")
             (make-string after ?_))))
 
-;; Format strings
+;; TODO: Get this down to one insert statement, this will perform much better
+;; As per: https://alphapapa.github.io/emacs-package-dev-handbook/#Inserting%20strings
 (defun print-state (buffer)
+  "Updates BUFFER with the current state."
   (with-current-buffer buffer
     (when buffer-read-only
       (read-only-mode 'toggle))
+    ;; Clear state
     (erase-buffer)
+    ;; Draw progress bar when time traveling
     (when (> (time-travel-max) 0)
       (insert (progress-bar (/ (or debug-mode--time-point
                                    (time-travel-max))
                                (time-travel-max)
                                1.0))
               "\n"))
-    (maphash (lambda (key val)
-               (insert (format "%s %s\n" key val)))
-             debug-mode-state)
+    (let ((keys '(variables functions)))
+      ;; This is going to be really ugly fixup later
+      ;; For each buffer print out all state stored in functions and variables
+      (maphash (lambda (buf-or-sym state)
+                 (insert
+                  (if (symbolp buf-or-sym)
+                      (symbol-name buf-or-sym)
+                    (buffer-name buf-or-sym))
+                  "\n")
+                 (maphash (lambda (key debug-state)
+                           (insert (make-string 2 ? ) (format "%s" key) "\n")
+                           (maphash (lambda (key val)
+                                      (insert
+                                       (make-string 4 ? )
+                                       (format "%s %s\n" key val)))
+                                    debug-state))
+                         state))
+               debug-mode-state))
     (read-only-mode 'toggle)))
 
+(defun __find-or-make-new-table (table key)
+  (let ((child (gethash key table (make-hash-table))))
+    (if (hash-table-empty-p child)
+        (puthash key child table)
+      (puthash key (copy-hash-table child) table))))
+
 (defun debug-mode-watch-variable (symbol newval operation where)
-  (add-to-list 'debug-mode-state-history (copy-hash-table debug-mode-state) 't)
-  (puthash symbol
-           (if newval
-               (apply
-                (cadr
-                 (assoc symbol debug-mode-formatters))
-                (list newval))
-             newval)
-           debug-mode-state)
-  (print-state debug-mode-buffer)
-  newval)
+  (let* ((temp-state (if debug-mode--time-traveling-p
+                         (copy-hash-table (or (car (last debug-mode-state-history))
+                                              (make-hash-table)))
+                       debug-mode-state))
+         (current-buf (or where 'global))
+         (buffer-state (__find-or-make-new-table temp-state current-buf))
+         (variable-state (__find-or-make-new-table buffer-state 'variables)))
+    (puthash symbol
+             (if newval
+                 (apply
+                  (cadr
+                   (assoc symbol debug-mode-formatters))
+                  (list newval))
+               newval)
+             variable-state)
+    (add-to-list 'debug-mode-state-history (copy-hash-table temp-state) 't)
+    (print-state debug-mode-buffer)
+    newval))
 
 (defun watch-variables (vars)
   (mapcar (lambda (var-&-formatter)
@@ -91,40 +137,6 @@
                                     'debug-mode-watch-variable)))
           vars)
   (print-state debug-mode-buffer))
-
-(defun time-travel-max ()
-  (length debug-mode-state-history))
-
-(defun time-travel-backwards ()
-  "Move back in time as long as time is a positive number. We don't want to start another big bang."
-  (interactive)
-  (when (not debug-mode--time-traveling-p)
-    (setq-local debug-mode--time-traveling-p 't)
-    (setq debug-mode-cached-state debug-mode-state)
-    (setq-local debug-mode--time-point (time-travel-max)))
-  (if (> debug-mode--time-point 0)
-      (progn
-        (setq debug-mode--time-point (1- debug-mode--time-point))
-        (setq debug-mode-state (nth debug-mode--time-point
-                                    debug-mode-state-history))
-        (print-state debug-mode-buffer))
-    (message "We can't go back any further!")))
-
-(defun time-travel-forwards ()
-  "Move back in time as long as time is a positive number. We don't want to start another big bang."
-  (interactive)
-  (when (not debug-mode--time-traveling-p)
-    (setq-local debug-mode--time-traveling-p 't)
-    (setq debug-mode-cached-state debug-mode-state)
-    (setq-local debug-mode--time-point (1+ (time-travel-max))))
-  (if (< debug-mode--time-point
-         (1- (time-travel-max)))
-      (progn
-        (setq debug-mode--time-point (1+ debug-mode--time-point))
-        (setq debug-mode-state (nth debug-mode--time-point
-                                    debug-mode-state-history))
-        (print-state debug-mode-buffer))
-    (message "We can't go forward any further!")))
 
 (defun unwatch-variables (variables)
   (mapcar (lambda (var)
@@ -144,14 +156,8 @@
   (interactive)
   (let* ((buffer debug-mode-buffer)
          (frame debug-mode-frame))
-    (setq debug-mode-buffer nil)
-    (setq debug-mode-state (make-hash-table))
-    (setq debug-mode-state-history '())
-    (setq debug-mode-frame nil)
-    (setq debug-mode-cached-state nil)
-    (setq debug-mode-formatters nil)
     (unwatch-variables debug-mode-variables)
-    (setq debug-mode-watch-variables '())
+    (debug-mode--reset-state)
     (kill-buffer buffer)
     (make-frame-invisible frame)))
 
@@ -167,15 +173,6 @@
   (interactive)
   (spawn-display)
   (watch-variables '((mc--current-cursor-id identity))))
-
-;; (define-minor-mode debug-mode-mode
-;;   "A simpler way to write lisps"
-;;   :lighter " debug"
-;;   :init-value nil
-;;   :keymap debug-mode-mode-map
-;;   (if debug-mode-buffer
-;;       (quit-debug-mode)
-;;     (spawn-display)))
 
 (define-derived-mode debug-mode-mode special-mode
   "Live Debug"
