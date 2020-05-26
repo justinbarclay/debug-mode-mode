@@ -38,7 +38,7 @@
 (defvar debug-mode-frame nil "The frame debug-mode-spawned")
 (defvar debug-mode-variables '() "Variables currently being watched by debug-mode")
 (defvar debug-mode-formatters '() "An alist of variable names and their formatters")
-
+(defvar debug-mode--func-name "")
 ;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helper functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -108,6 +108,9 @@
         (puthash key child table)
       (puthash key (copy-hash-table child) table))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Watchers and Unwatchers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defun debug-mode-watch-variable (symbol newval operation where)
   (let* ((temp-state (if debug-mode--time-traveling-p
                          (copy-hash-table (or (car (last debug-mode-state-history))
@@ -128,6 +131,42 @@
     (print-state debug-mode-buffer)
     newval))
 
+(defun debug-mode-track-function (func &rest args)
+  (let* ((temp-state (if debug-mode--time-traveling-p
+                         (copy-hash-table (or (car (last debug-mode-state-history))
+                                              (make-hash-table)))
+                       debug-mode-state))
+         (current-buf (or (current-buffer) 'global))
+         (buffer-state (__find-or-make-new-table temp-state current-buf))
+         (func-state (__find-or-make-new-table buffer-state 'functions))
+         (formatted-args (if (and args
+                                  (car args))
+                             (mapconcat (lambda (element)
+                                          (format "%s" element))
+                                        args
+                                        ", ")
+                           args))
+         (spacer (make-string 4 ? )))
+    (puthash func
+             (format
+              "Args: %s"
+              formatted-args)
+             func-state)
+    (add-to-list 'debug-mode-state-history (copy-hash-table temp-state) 't)
+    (print-state debug-mode-buffer)))
+
+(defmacro watcher-skeleton ()
+  "A macro for defining a function that that wraps "
+  ;; Todo, this is relying on global state and isn't very nice. This should be refactored so it's simpler
+  (let ((func-name (intern (concat "debug-mode-watch-" (symbol-name debug-mode--func-name))))
+        (func-sym  debug-mode--func-name))
+    `(defun ,func-name
+         (&rest args)
+         "Wraps debug-mode-watch-function to pass in the current functions name."
+       (apply 'debug-mode-track-function
+              ',func-sym
+              args))))
+
 (defun watch-variables (vars)
   (mapcar (lambda (var-&-formatter)
             (let ((var (car var-&-formatter)))
@@ -138,12 +177,25 @@
           vars)
   (print-state debug-mode-buffer))
 
+(defun watch-functions (functions)
+  (dolist (func functions)
+    ;; TODO this is relying on global state and isn't very nice, need to find a better work around
+    (setq debug-mode--func-name func)
+    (setq new-func (watcher-skeleton))
+    (advice-add func :before new-func))
+  (setq new-func nil))
+
 (defun unwatch-variables (variables)
   (mapcar (lambda (var)
             (remove-variable-watcher var 'debug-mode-watch-variable))
           variables))
 
-;; Enable and Disable state for debug-mode
+(defun unwatch-functions (functions)
+  (mapcar (lambda (func)
+            (advice-remove var 'debug-mode-watch-function))
+          functions))
+
+;; Open up "debug mode" program
 (defun spawn-display ()
   (when (not debug-mode-buffer)
     (setq debug-mode-buffer (get-buffer-create "*debug-mode*")))
@@ -152,6 +204,7 @@
     (setq debug-mode-frame (make-frame))
     (debug-mode-mode)))
 
+;; Functions intended to be called by users
 (defun quit-live-debug ()
   (interactive)
   (let* ((buffer debug-mode-buffer)
@@ -172,6 +225,7 @@
 (defun live-debug ()
   (interactive)
   (spawn-display)
+  (watch-functions '(mc/create-cursor-id right-char left-char))
   (watch-variables '((mc--current-cursor-id identity))))
 
 (define-derived-mode debug-mode-mode special-mode
