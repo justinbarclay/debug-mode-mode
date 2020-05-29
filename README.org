@@ -1,0 +1,19 @@
+* debug-mode-mode
+debug-mode-mode provides a live-debugging like environment for emacs.
+
+Simply tell it what variables and functions to watch and then call live-debug. Then watch the magic happen. Or don't it's not that magical or entertaining
+
+How it works:
+1. Tell debug-mode-mode what state you want to watch and how you want to display it.
+#+BEGIN_SRC elisp
+  ;; Watch some state to do with multiple-cursors
+  (setq debug-mode-watch-variables '(mc--current-cursor-id)) 
+#+END_SRC
+
+2. Then you tell it what functions you want to watch
+#+BEGIN_SRC elisp
+   ;; Watch some state with multiple cursors and cursor movement
+   (setq debug-mode-watch-functions '(multiple-cursors-mode mc/create-cursor-id right-char left-char previous-line next-line yank))
+#+END_SRC
+
+3. Call ~live-debug~ function
