@@ -106,4 +106,5 @@
         (print-state debug-mode-buffer))
     (message "We can't go forward any further!")))
 
+(provide 'debug-mode-time-travel)
 ;; debug-mode-time-travel.el ends here

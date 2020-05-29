@@ -27,7 +27,7 @@
 
 ;; Modules
 ;; A hack until we get this fully loaded as a library
-(load-file "./debug-mode-time-travel.el")
+(require 'debug-mode-time-travel)
 
 
 ;; Local State
@@ -36,24 +36,13 @@
 (defvar debug-mode-state-history '())
 (defvar debug-mode-buffer nil "The current debug mode buffer")
 (defvar debug-mode-frame nil "The frame debug-mode-spawned")
-(defvar debug-mode-variables '() "Variables currently being watched by debug-mode")
-(defvar debug-mode-formatters '() "An alist of variable names and their formatters")
+(defvar debug-mode-variables '() "An alist of variables and formatters to display those variables in the debug-mode window.")
 (defvar debug-mode--func-name "")
 ;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helper functions
 ;;;;;;;;;;;;;;;;;;;;;;;;;
-(defun debug-mode--reset-state ()
-  (setq debug-mode-buffer nil)
-  (setq debug-mode--time-traveling-p nil)
-  (setq debug-mode-state (make-hash-table))
-  (setq debug-mode-state-history '())
-  (setq debug-mode-frame nil)
-  (setq debug-mode-cached-state nil)
-  (setq debug-mode-formatters nil)
-  (setq debug-mode-watch-variables '()))
-
 (defun progress-bar (percentage)
-  "Percentage is how complete the current progress is."
+  "Create meant take up the width of the frame and be filled a percentage value"
   (let* ((bar-length (- (window-width) 12))
          (before (round (* bar-length percentage)))
          (after (if (= percentage 1.0)
@@ -123,7 +112,7 @@
              (if newval
                  (apply
                   (cadr
-                   (assoc symbol debug-mode-formatters))
+                   (assoc symbol debug-mode-variables))
                   (list newval))
                newval)
              variable-state)
@@ -168,17 +157,20 @@
               args))))
 
 (defun watch-variables (vars)
-  (mapcar (lambda (var-&-formatter)
-            (let ((var (car var-&-formatter)))
-              (add-to-list 'debug-mode-formatters var-&-formatter )
-              (add-to-list 'debug-mode-variables var)
-              (add-variable-watcher var
+  (mapcar (lambda (watch-var)
+            (let ((var-&-formatter (if (listp watch-var)
+                                       watch-var
+                                     (list watch-var 'identity))))
+              (add-to-list 'debug-mode-variables var-&-formatter)
+              (add-variable-watcher (car var-&-formatter)
                                     'debug-mode-watch-variable)))
           vars)
   (print-state debug-mode-buffer))
 
 (defun watch-functions (functions)
   (dolist (func functions)
+    (let ((func-name "1"))
+      (defalias (intern (concat "debug-mode-watch-" (symbol-name debug-mode--func-name))) (lambda () 1)))
     ;; TODO this is relying on global state and isn't very nice, need to find a better work around
     (setq debug-mode--func-name func)
     (setq new-func (watcher-skeleton))
@@ -186,14 +178,26 @@
   (setq new-func nil))
 
 (defun unwatch-variables (variables)
-  (mapcar (lambda (var)
-            (remove-variable-watcher var 'debug-mode-watch-variable))
+  (mapcar (lambda (var-&-formatter)
+            (remove-variable-watcher (car var-&-formatter) 'debug-mode-watch-variable))
           variables))
 
 (defun unwatch-functions (functions)
   (mapcar (lambda (func)
-            (advice-remove var 'debug-mode-watch-function))
+            (advice-remove func (intern (concat "debug-mode-watch-" (symbol-name func)))))
           functions))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Set-up mode
+;;;;;;;;;;;;;;;;;;;;;;;;;
+(defun debug-mode--reset-state ()
+  (setq debug-mode-buffer nil)
+  (setq debug-mode--time-traveling-p nil)
+  (setq debug-mode-state (make-hash-table))
+  (setq debug-mode-state-history '())
+  (setq debug-mode-frame nil)
+  (setq debug-mode-cached-state nil)
+  (setq debug-mode-watch-variables '()))
 
 ;; Open up "debug mode" program
 (defun spawn-display ()
@@ -210,6 +214,7 @@
   (let* ((buffer debug-mode-buffer)
          (frame debug-mode-frame))
     (unwatch-variables debug-mode-variables)
+    (unwatch-functions debug-mode-watch-functions)
     (debug-mode--reset-state)
     (kill-buffer buffer)
     (make-frame-invisible frame)))
@@ -223,10 +228,12 @@
   "Keymap for `debug-mode-mode'.")
 
 (defun live-debug ()
+  "live-debug starts a live debugging session. It starts tracking the variables stored in debug-mode-watch-variables and
+   the functions stored in debug-mode-watch-functions. Then it will create a new frame and opens into the debug-mode buffer."
   (interactive)
   (spawn-display)
-  (watch-functions '(mc/create-cursor-id right-char left-char))
-  (watch-variables '((mc--current-cursor-id identity))))
+  (watch-functions debug-mode-watch-functions)
+  (watch-variables debug-mode-watch-variables))
 
 (define-derived-mode debug-mode-mode special-mode
   "Live Debug"
@@ -236,6 +243,10 @@
   :syntax-table nil
   (use-local-map debug-mode-mode-map))
 
-;; (unwatch-variables '(parinfer-rust--current-changes parinfer-rust--current-changes))
+(setq debug-mode-watch-functions '(multiple-cursors-mode mc/create-cursor-id right-char left-char
+                                                         previous-line next-line yank
+                                                         time-travel-backwards time-travel-forwards))
+(setq debug-mode-watch-variables '(mc--current-cursor-id))
+
 (provide 'debug-mode-mode)
 ;;; debug-mode-mode.el ends here
