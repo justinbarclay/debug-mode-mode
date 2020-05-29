@@ -1,9 +1,12 @@
 * Todo
 ** DONE Doc time travel alogorithm
 ** DONE Refactor state system
+** DONE Track buffers in state system
+** DONE Track function calls in state system
+** TODO Name-space all functions to start with debug mode or live debug
+*** Settle on a name
 ** TODO Fix reprinting of state
 *** This should happen automatically, and not need to be called by every function that manipulates the debug-mode-buffer variables
-** TODO Track buffers in state system
-** TODO Track function calls in state system
 ** TODO Add ability to quit time travel
 ** TODO Fix bug where progress bar doesn't fill up when at the end of time
+
